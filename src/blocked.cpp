@@ -192,6 +192,10 @@ void queueClientForReprocessing(client *c) {
 void unblockClient(client *c) {
     serverAssert(GlobalLocksAcquired());
     serverAssert(c->lock.fOwnLock());
+    /* Must run before unblockClientWaitingData(), which zeroes bpop.timeout:
+     * the timeout table key is derived from it, so removing afterwards leaves
+     * a dangling client pointer in the table (see Snapchat/KeyDB#928). */
+    removeClientFromTimeoutTable(c);
     if (c->btype == BLOCKED_LIST ||
         c->btype == BLOCKED_ZSET ||
         c->btype == BLOCKED_STREAM) {
@@ -227,7 +231,6 @@ void unblockClient(client *c) {
     g_pserver->blocked_clients_by_type[c->btype]--;
     c->flags &= ~CLIENT_BLOCKED;
     c->btype = BLOCKED_NONE;
-    removeClientFromTimeoutTable(c);
     queueClientForReprocessing(c);
 }
 

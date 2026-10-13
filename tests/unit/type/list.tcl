@@ -1076,6 +1076,22 @@ start_server {
         r ping
     } {PONG}
 
+    test "Regression for #928 - served BLPOP with timeout leaves no timeout table entry" {
+        r del l928
+        set rd [redis_deferring_client]
+        $rd blpop l928 100
+        wait_for_condition 50 100 {
+            [s blocked_clients] == 1
+        } else {
+            fail "client not blocked"
+        }
+        r rpush l928 a
+        assert_equal {l928 a} [$rd read]
+        $rd close
+        assert_equal 0 [getInfoProperty [r info clients] clients_in_timeout_table]
+        r ping
+    } {PONG}
+
     test "client unblock tests" {
         r del l
         set rd [redis_deferring_client]

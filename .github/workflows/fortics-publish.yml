@@ -1,0 +1,120 @@
+name: Fortics publish image
+
+# Release: push a tag "v<keydb-version>-fortics.<n>" (e.g. v6.3.4-fortics.1)
+#   -> image tags 6.3.4-fortics.1, 6.3.4-fortics and <sha>.
+# workflow_dispatch on any ref -> image tag <sha> only (for staging tests).
+on:
+  push:
+    tags: ["v*-fortics.*"]
+  workflow_dispatch:
+
+concurrency:
+  group: fortics-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_NAME: keydb
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config autoconf nasm tcl tcl-dev \
+            libjemalloc-dev uuid-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Build
+        run: make -j"$(nproc)" BUILD_TLS=yes
+
+      - name: Tests (blocking, scripting, networking)
+        run: |
+          make -C tests/modules -j"$(nproc)"
+          for t in unit/type/list unit/type/zset unit/type/stream unit/scripting \
+                   unit/networking unit/moduleapi/blockedclient; do
+            ./runtest --single "$t" --clients 4 --verbose
+          done
+
+  publish:
+    name: publish
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID || 'gcp-fortics-360context' }}
+      GAR_LOCATION: ${{ vars.GAR_LOCATION || 'us-central1' }}
+      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || 'keydb' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require WIF vars
+        run: |
+          if [ -z "${{ vars.WIF_PROVIDER }}" ] || [ -z "${{ vars.WIF_SERVICE_ACCOUNT }}" ]; then
+            echo "Set GitHub vars WIF_PROVIDER and WIF_SERVICE_ACCOUNT."
+            exit 1
+          fi
+
+      - name: Image tags
+        id: meta
+        run: |
+          image="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          short_sha="${GITHUB_SHA::8}"
+          tags="${image}:${short_sha}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"            # 6.3.4-fortics.1
+            base="$(grep -oP 'KEYDB_REAL_VERSION "\K[^"]+' src/version.h)"
+            case "$version" in
+              "${base}"-fortics.[0-9]*) ;;
+              *) echo "Tag ${GITHUB_REF_NAME} does not match src/version.h (${base})"; exit 1 ;;
+            esac
+            tags="${tags},${image}:${version},${image}:${base}-fortics"
+          fi
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: pkg/docker/Dockerfile.fortics
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: GIT_SHA=${{ steps.meta.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          cache-from: type=gha,scope=keydb
+          cache-to: type=gha,mode=max,scope=keydb
+
+      - name: Summary
+        run: |
+          {
+            echo "### KeyDB image published"
+            echo '```'
+            echo "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo "Tags: ${{ steps.meta.outputs.tags }}"
+          } >> "$GITHUB_STEP_SUMMARY"
