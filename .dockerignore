@@ -1,0 +1,6 @@
+.git
+**/*.o
+**/*.a
+**/*.d
+src/release.h
+tests/tmp

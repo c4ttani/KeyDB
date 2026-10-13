@@ -1,0 +1,48 @@
+# Fortics build of KeyDB: compiles the checked-out tree (not a git clone of
+# upstream) so our patches ship. Runtime layout mirrors eqalpha/keydb so the
+# Nomad job keeps working unchanged (keydb-server/keydb-cli on PATH, /data).
+FROM ubuntu:22.04 AS build
+ARG GIT_SHA=00000000
+RUN set -eux; \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -qqy --no-install-recommends \
+                build-essential pkg-config autoconf autotools-dev nasm \
+                libjemalloc-dev uuid-dev libssl-dev libcurl4-openssl-dev zlib1g-dev; \
+        rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN set -eux; \
+        # no .git in the build context: embed the commit for INFO server
+        sed -i "s/echo 00000000/echo ${GIT_SHA}/" src/mkreleasehdr.sh; \
+        # disable protected mode as it relates to docker (same as upstream image)
+        sed -ri 's!^( *createBoolConfig[(]"protected-mode",.*, *)1( *,.*[)],)$!\10\2!' src/config.cpp; \
+        grep -qE '^ *createBoolConfig[(]"protected-mode",.*, *0 *,.*[)],$' src/config.cpp; \
+        make -j"$(nproc)" BUILD_TLS=yes; \
+        cd src; \
+        strip keydb-server keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof keydb-diagnostic-tool keydb-sentinel; \
+        install -m 0755 keydb-server keydb-cli keydb-benchmark keydb-check-rdb keydb-check-aof keydb-diagnostic-tool keydb-sentinel /usr/local/bin/
+
+FROM ubuntu:22.04
+RUN set -eux; \
+        groupadd -r keydb && useradd -r -g keydb keydb; \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -qqy --no-install-recommends \
+                ca-certificates gosu libjemalloc2 libuuid1 libssl3 libcurl4 zlib1g; \
+        rm -rf /var/lib/apt/lists/*; \
+        mkdir /data && chown keydb:keydb /data; \
+        mkdir -p /etc/keydb
+COPY --from=build /usr/local/bin/ /usr/local/bin/
+COPY --from=build /src/keydb.conf /etc/keydb/keydb.conf
+COPY pkg/docker/docker-entrypoint.fortics.sh /usr/local/bin/docker-entrypoint.sh
+RUN set -eux; \
+        sed -i 's/^\(daemonize .*\)$/# \1/; s/^\(logfile .*\)$/# \1/; s/^\(bind .*\)$/# \1/; s/protected-mode yes/protected-mode no/' /etc/keydb/keydb.conf; \
+        sed -i 's/^\(dir .*\)$/# \1\ndir \/data/' /etc/keydb/keydb.conf; \
+        ln -s keydb-cli /usr/local/bin/redis-cli; \
+        ln -s keydb.conf /etc/keydb/redis.conf; \
+        chmod +x /usr/local/bin/docker-entrypoint.sh; \
+        keydb-server --version
+VOLUME /data
+WORKDIR /data
+ENTRYPOINT ["docker-entrypoint.sh"]
+EXPOSE 6379
+CMD ["keydb-server","/etc/keydb/keydb.conf"]
