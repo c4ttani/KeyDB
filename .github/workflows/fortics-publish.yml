@@ -51,7 +51,7 @@ jobs:
     env:
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID || 'gcp-fortics-360context' }}
       GAR_LOCATION: ${{ vars.GAR_LOCATION || 'us-central1' }}
-      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || 'context360' }}
+      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || 'keydb' }}
     steps:
       - uses: actions/checkout@v4
 

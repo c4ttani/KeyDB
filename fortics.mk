@@ -5,7 +5,7 @@ VERSION      := $(shell grep -oP 'KEYDB_REAL_VERSION "\K[^"]+' src/version.h)
 GIT_SHA      := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo 00000000)
 GAR_LOCATION ?= us-central1
 GCP_PROJECT  ?= gcp-fortics-360context
-GAR_REPO     ?= context360
+GAR_REPO     ?= keydb
 IMAGE        ?= $(GAR_LOCATION)-docker.pkg.dev/$(GCP_PROJECT)/$(GAR_REPO)/keydb
 LOCAL_IMAGE  ?= keydb-fortics:local
 JOBS         ?= $(shell nproc)
