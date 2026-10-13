@@ -214,7 +214,6 @@ static void read_numeral (LexState *ls, SemInfo *seminfo) {
 */
 static size_t skip_sep (LexState *ls) {
   size_t count = 0;
-  int count = 0;
   int s = ls->current;
   lua_assert(s == '[' || s == ']');
   save_and_next(ls);
